@@ -1,6 +1,6 @@
-# telegram-test-bot
+# telegram-allert-bot
 
-Telegram-бот для управления QA-тестами через GitHub Actions. Работает по webhook, деплоится на Railway.
+Telegram bot for QA test management via GitHub Actions API
 
 ## Возможности
 
