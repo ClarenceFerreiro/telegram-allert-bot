@@ -1,0 +1,30 @@
+# Render Blueprint — Telegram Alert Bot
+# Документация: https://render.com/docs/blueprint-spec
+# Free tier: web-сервис с auto-deploy из GitHub
+
+services:
+  - type: web
+    name: telegram-allert-bot
+    runtime: node
+    plan: free
+    region: frankfurt
+    branch: main
+    buildCommand: npm install
+    startCommand: node bot.js
+    healthCheckPath: /
+    autoDeploy: true
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: PAT_TOKEN
+        sync: false
+      - key: TELEGRAM_USER_ID
+        sync: false
+      - key: GITHUB_REPOS
+        value: ClarenceFerreiro/postman-api-tests
+      - key: DEFAULT_WORKFLOW
+        value: allure-report.yml
+      - key: DEFAULT_BRANCH
+        value: main
+      - key: REPORT_BASE_URL
+        value: https://clarenceferreiro.github.io/postman-api-tests/
