@@ -24,6 +24,12 @@ const DEFAULT_WORKFLOW = process.env.DEFAULT_WORKFLOW || 'allure-report.yml';
 const DEFAULT_BRANCH = process.env.DEFAULT_BRANCH || 'main';
 const REPORT_BASE_URL = process.env.REPORT_BASE_URL || 'https://clarenceferreiro.github.io/postman-api-tests/';
 
+// Сайты для мониторинга (through env var SITES or default)
+const SITES = (process.env.SITES || 'https://babycloud.by/,https://premiumfuji.by/,http://188.255.163.132/')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+
 if (!TELEGRAM_BOT_TOKEN) { console.error('❌ TELEGRAM_BOT_TOKEN not set'); process.exit(1); }
 if (!GITHUB_TOKEN) { console.error('❌ PAT_TOKEN not set'); process.exit(1); }
 
@@ -62,6 +68,7 @@ function mainMenuKeyboard() {
     .text('📊 Отчёты', 'btn_report')
     .text('📂 Репозитории', 'btn_repos')
     .row()
+    .text('🌐 Сайты', 'btn_sites')
     .text('❓ Помощь', 'btn_help');
 }
 
@@ -280,13 +287,91 @@ async function handleHelp(ctx) {
       '/alerts — последние неудачные запуски\n' +
       '/run — запуск workflow\n' +
       '/report — ссылки на Allure-отчёты\n' +
-      '/repos — список отслеживаемых репозиториев\n\n' +
+      '/repos — список отслеживаемых репозиториев\n' +
+      '/sites — проверка доступности сайтов\n\n' +
       '💡 Или используйте кнопки меню ниже:',
     {
       parse_mode: 'Markdown',
       reply_markup: mainMenuKeyboard(),
     }
   );
+}
+
+// ─── Проверка сайтов ───
+
+async function checkSite(url) {
+  const start = Date.now();
+  try {
+    const resp = await axios.get(url, {
+      timeout: 10000,
+      maxRedirects: 5,
+      validateStatus: () => true, // не бросать ошибку на не-2xx
+      // Для refgroup.by (VPS IP) — передаём Host header
+      headers: url.includes('188.255.163.132') ? { Host: 'refgroup.by' } : {},
+    });
+    const elapsed = Date.now() - start;
+    const status = resp.status;
+    const ok = status >= 200 && status < 400;
+    return {
+      url,
+      status,
+      ok,
+      elapsed,
+      error: null,
+    };
+  } catch (err) {
+    const elapsed = Date.now() - start;
+    return {
+      url,
+      status: null,
+      ok: false,
+      elapsed,
+      error: err.code || err.message || 'Connection failed',
+    };
+  }
+}
+
+function siteName(url) {
+  try {
+    const u = new URL(url);
+    return u.hostname;
+  } catch {
+    return url;
+  }
+}
+
+async function handleSites(ctx) {
+  let text = '🌐 *Проверка сайтов:*\n\n';
+  let allOk = true;
+
+  const results = await Promise.all(SITES.map((s) => checkSite(s)));
+
+  for (const r of results) {
+    const name = siteName(r.url);
+    if (r.ok) {
+      text += `✅ *${name}* — ${r.status} (${r.elapsed}ms)\n`;
+    } else {
+      allOk = false;
+      if (r.status) {
+        text += `❌ *${name}* — ${r.status} (${r.elapsed}ms)\n`;
+      } else {
+        text += `❌ *${name}* — ${r.error} (${r.elapsed}ms)\n`;
+      }
+    }
+  }
+
+  text += '\n';
+  if (allOk) {
+    text += '✅ Все сайты доступны!';
+  } else {
+    text += '🚨 Есть проблемы с доступностью!';
+  }
+
+  await ctx.reply(text, {
+    parse_mode: 'Markdown',
+    disable_web_page_preview: true,
+    reply_markup: backKeyboard(),
+  });
 }
 
 // ─── Команды ───
@@ -314,6 +399,7 @@ bot.command('last', handleLast);
 bot.command('alerts', handleAlerts);
 bot.command('report', handleReport);
 bot.command('repos', handleRepos);
+bot.command('sites', handleSites);
 
 bot.command('run', async (ctx) => {
   const args = ctx.message.text.split(/\s+/).slice(1);
@@ -353,6 +439,11 @@ bot.callbackQuery('btn_report', async (ctx) => {
 bot.callbackQuery('btn_repos', async (ctx) => {
   await ctx.answerCallbackQuery();
   await handleRepos(ctx);
+});
+
+bot.callbackQuery('btn_sites', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await handleSites(ctx);
 });
 
 bot.callbackQuery('btn_help', async (ctx) => {
@@ -425,6 +516,7 @@ async function main() {
     { command: 'run', description: 'Запустить workflow' },
     { command: 'report', description: 'Ссылки на отчёты' },
     { command: 'repos', description: 'Отслеживаемые репозитории' },
+    { command: 'sites', description: 'Проверка сайтов' },
   ]);
 
   await bot.start({
