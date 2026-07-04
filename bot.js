@@ -3,60 +3,31 @@
  * ------------------
  * Мониторинг и управление GitHub Actions через Telegram.
  * Работает в режиме long polling (grammY) — публичный URL не требуется.
- *
- * Команды:
- *   /start   — приветствие
- *   /help    — список команд
- *   /status  — реальный статус последних GitHub Actions runs
- *   /report  — ссылки на Allure-отчёты (GitHub Pages)
- *   /run     — запуск workflow через GitHub API
- *   /repos   — список отслеживаемых репозиториев
- *   /alerts  — последние неудачные/ошибочные запуски
- *   /last    — последние 5 запусков тестов
  */
 
-const { Bot } = require('grammy');
+const { Bot, InlineKeyboard } = require('grammy');
 const axios = require('axios');
 
-// ──────────────────────────────────────────────────────────────
-//  Конфигурация из переменных окружения
-// ──────────────────────────────────────────────────────────────
+// ─── Конфигурация ───
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const GITHUB_TOKEN = process.env.PAT_TOKEN;
 const ALLOWED_USER_ID = process.env.TELEGRAM_USER_ID
   ? Number(process.env.TELEGRAM_USER_ID)
   : null;
 
-// Список отслеживаемых репозиториев (owner/repo)
 const REPOS = (process.env.GITHUB_REPOS || 'ClarenceFerreiro/postman-api-tests')
   .split(',')
   .map((r) => r.trim())
   .filter(Boolean);
 
-// Workflow для запуска командой /run (по умолчанию allure-report.yml)
 const DEFAULT_WORKFLOW = process.env.DEFAULT_WORKFLOW || 'allure-report.yml';
 const DEFAULT_BRANCH = process.env.DEFAULT_BRANCH || 'main';
+const REPORT_BASE_URL = process.env.REPORT_BASE_URL || 'https://clarenceferreiro.github.io/postman-api-tests/';
 
-// Базовый URL для Allure-отчётов на GitHub Pages
-const REPORT_BASE_URL =
-  process.env.REPORT_BASE_URL ||
-  'https://clarenceferreiro.github.io/postman-api-tests/';
+if (!TELEGRAM_BOT_TOKEN) { console.error('❌ TELEGRAM_BOT_TOKEN not set'); process.exit(1); }
+if (!GITHUB_TOKEN) { console.error('❌ PAT_TOKEN not set'); process.exit(1); }
 
-// ──────────────────────────────────────────────────────────────
-//  Валидация конфигурации
-// ──────────────────────────────────────────────────────────────
-if (!TELEGRAM_BOT_TOKEN) {
-  console.error('❌ TELEGRAM_BOT_TOKEN не задан. Установите переменную окружения.');
-  process.exit(1);
-}
-if (!GITHUB_TOKEN) {
-  console.error('❌ PAT_TOKEN не задан. Установите переменную окружения.');
-  process.exit(1);
-}
-
-// ──────────────────────────────────────────────────────────────
-//  HTTP-клиент для GitHub API
-// ──────────────────────────────────────────────────────────────
+// ─── GitHub API client ───
 const github = axios.create({
   baseURL: 'https://api.github.com',
   timeout: 15000,
@@ -67,30 +38,48 @@ const github = axios.create({
   },
 });
 
-// ──────────────────────────────────────────────────────────────
-//  Создание бота
-// ──────────────────────────────────────────────────────────────
 const bot = new Bot(TELEGRAM_BOT_TOKEN);
 
-// Middleware: ограничение доступа по user ID (если задан)
+// Access control
 bot.use((ctx, next) => {
   if (ALLOWED_USER_ID !== null && ctx.from?.id !== ALLOWED_USER_ID) {
-    console.warn(`🚫 Доступ запрещён для пользователя ${ctx.from?.id} (${ctx.from?.username || '—'})`);
+    console.warn(`🚫 Access denied for user ${ctx.from?.id} (${ctx.from?.username || 'unknown'})`);
     return ctx.reply('🚫 У вас нет доступа к этому боту.');
   }
   return next();
 });
 
-// ──────────────────────────────────────────────────────────────
-//  Вспомогательные функции
-// ──────────────────────────────────────────────────────────────
+// ─── Inline-клавиатуры (меню-кнопки) ───
 
-/**
- * Форматирование статуса run с эмодзи.
- * @param {string} status
- * @param {string|null} conclusion
- * @returns {string}
- */
+function mainMenuKeyboard() {
+  return new InlineKeyboard()
+    .text('📊 Статус', 'btn_status')
+    .text('🕐 Последние', 'btn_last')
+    .row()
+    .text('🚨 Алерты', 'btn_alerts')
+    .text('🚀 Запустить', 'btn_run')
+    .row()
+    .text('📊 Отчёты', 'btn_report')
+    .text('📂 Репозитории', 'btn_repos')
+    .row()
+    .text('❓ Помощь', 'btn_help');
+}
+
+function backKeyboard() {
+  return new InlineKeyboard()
+    .text('⬅️ В меню', 'btn_menu');
+}
+
+function runKeyboard() {
+  return new InlineKeyboard()
+    .text('🚀 Allure Report', 'btn_run_allure')
+    .text('📝 TypeScript Tests', 'btn_run_ts')
+    .row()
+    .text('⬅️ В меню', 'btn_menu');
+}
+
+// ─── Вспомогательные функции ───
+
 function formatRunStatus(status, conclusion) {
   if (status === 'completed') {
     if (conclusion === 'success') return '✅ Успех';
@@ -105,12 +94,6 @@ function formatRunStatus(status, conclusion) {
   return `ℹ️ ${status}`;
 }
 
-/**
- * Запрос последних runs для репозитория.
- * @param {string} repo — owner/repo
- * @param {number} perPage — количество
- * @returns {Promise<Array>}
- */
 async function getRecentRuns(repo, perPage = 5) {
   const { data } = await github.get(`/repos/${repo}/actions/runs`, {
     params: { per_page: perPage, page: 1 },
@@ -118,70 +101,23 @@ async function getRecentRuns(repo, perPage = 5) {
   return data.workflow_runs || [];
 }
 
-/**
- * Получение списка workflows репозитория.
- * @param {string} repo
- * @returns {Promise<Array>}
- */
 async function getWorkflows(repo) {
   const { data } = await github.get(`/repos/${repo}/actions/workflows`);
   return data.workflows || [];
 }
 
-/**
- * Безопасная обработка ошибок — возвращает читаемое сообщение.
- * @param {Error} err
- * @returns {string}
- */
 function describeError(err) {
   if (err.response) {
     const gh = err.response.data;
-    const msg =
-      gh?.message ||
-      gh?.error ||
-      `GitHub API: ${err.response.status} ${err.response.statusText}`;
+    const msg = gh?.message || gh?.error || `GitHub API: ${err.response.status}`;
     return `❌ ${msg}`;
   }
-  return `❌ ${err.message || 'Неизвестная ошибка'}`;
+  return `❌ ${err.message || 'Unknown error'}`;
 }
 
-// ──────────────────────────────────────────────────────────────
-//  Команды
-// ──────────────────────────────────────────────────────────────
+// ─── Обработчики (команды + кнопки) ───
 
-bot.command('start', async (ctx) => {
-  await ctx.reply(
-    '🤖 *Telegram Alert Bot*\n\n' +
-      'Бот для мониторинга и управления GitHub Actions.\n' +
-      'Используйте /help для списка всех команд.',
-    { parse_mode: 'Markdown' }
-  );
-});
-
-bot.command('help', async (ctx) => {
-  await ctx.reply(
-    '📋 *Команды бота:*\n\n' +
-      '/start — приветствие\n' +
-      '/help — этот список команд\n' +
-      '/status — статус последних GitHub Actions runs\n' +
-      '/last — последние 5 запусков тестов\n' +
-      '/alerts — последние неудачные запуски\n' +
-      '/run — запуск workflow (по умолчанию allure-report.yml)\n' +
-      '/report — ссылки на Allure-отчёты\n' +
-      '/repos — список отслеживаемых репозиториев',
-    { parse_mode: 'Markdown' }
-  );
-});
-
-bot.command('repos', async (ctx) => {
-  const lines = REPOS.map((r, i) => `${i + 1}. [${r}](https://github.com/${r})`).join('\n');
-  await ctx.reply(`📂 *Отслеживаемые репозитории:*\n\n${lines}`, {
-    parse_mode: 'Markdown',
-    disable_web_page_preview: true,
-  });
-});
-
-bot.command('status', async (ctx) => {
+async function handleStatus(ctx) {
   let text = '📊 *Статус GitHub Actions:*\n\n';
   for (const repo of REPOS) {
     try {
@@ -203,10 +139,11 @@ bot.command('status', async (ctx) => {
   await ctx.reply(text, {
     parse_mode: 'Markdown',
     disable_web_page_preview: true,
+    reply_markup: backKeyboard(),
   });
-});
+}
 
-bot.command('last', async (ctx) => {
+async function handleLast(ctx) {
   let text = '🕐 *Последние 5 запусков тестов:*\n\n';
   for (const repo of REPOS) {
     try {
@@ -231,10 +168,11 @@ bot.command('last', async (ctx) => {
   await ctx.reply(text, {
     parse_mode: 'Markdown',
     disable_web_page_preview: true,
+    reply_markup: backKeyboard(),
   });
-});
+}
 
-bot.command('alerts', async (ctx) => {
+async function handleAlerts(ctx) {
   let text = '🚨 *Последние алерты (неудачные запуски):*\n\n';
   let found = false;
   for (const repo of REPOS) {
@@ -264,21 +202,20 @@ bot.command('alerts', async (ctx) => {
   await ctx.reply(text, {
     parse_mode: 'Markdown',
     disable_web_page_preview: true,
+    reply_markup: backKeyboard(),
   });
-});
+}
 
-bot.command('report', async (ctx) => {
+async function handleReport(ctx) {
   const lines = [
     '📊 *Ссылки на Allure-отчёты:*\n',
     `🔗 Основной отчёт: ${REPORT_BASE_URL}`,
   ];
-  // Дополнительные подстраницы для типовой структуры postman-api-tests
   if (!REPORT_BASE_URL.endsWith('/')) {
-    lines.push(`🔗 Playwright: ${REPORT_BASE_URL}/playwright/`);
+    lines.push(`🔗 TypeScript: ${REPORT_BASE_URL}/allure-ts/`);
   } else {
-    lines.push(`🔗 Playwright: ${REPORT_BASE_URL}playwright/`);
+    lines.push(`🔗 TypeScript: ${REPORT_BASE_URL}allure-ts/`);
   }
-  // Ссылка на Pages-сайт репозитория (если доступен)
   for (const repo of REPOS) {
     const [owner, name] = repo.split('/');
     lines.push(`\n📦 [${repo} — Pages](https://${owner}.github.io/${name}/)`);
@@ -286,32 +223,35 @@ bot.command('report', async (ctx) => {
   await ctx.reply(lines.join('\n'), {
     parse_mode: 'Markdown',
     disable_web_page_preview: true,
+    reply_markup: backKeyboard(),
   });
-});
+}
 
-bot.command('run', async (ctx) => {
-  const args = ctx.message.text.split(/\s+/).slice(1);
-  const workflowName = args[0] || DEFAULT_WORKFLOW;
-  const ref = args[1] || DEFAULT_BRANCH;
+async function handleRepos(ctx) {
+  const lines = REPOS.map((r, i) => `${i + 1}. [${r}](https://github.com/${r})`).join('\n');
+  await ctx.reply(`📂 *Отслеживаемые репозитории:*\n\n${lines}`, {
+    parse_mode: 'Markdown',
+    disable_web_page_preview: true,
+    reply_markup: backKeyboard(),
+  });
+}
+
+async function handleRun(ctx, workflowName) {
+  const wf = workflowName || DEFAULT_WORKFLOW;
+  const ref = DEFAULT_BRANCH;
   const repo = REPOS[0];
 
-  await ctx.reply(`🚀 Запускаю workflow *${workflowName}* (ветка: ${ref}) в ${repo}...`, {
+  await ctx.reply(`🚀 Запускаю workflow *${wf}* (ветка: ${ref}) в ${repo}...`, {
     parse_mode: 'Markdown',
   });
 
   try {
-    // Сначала ищем ID workflow по имени файла
     let workflowId = null;
     const workflows = await getWorkflows(repo);
-    const wf = workflows.find(
-      (w) => w.path === `.github/workflows/${workflowName}` || w.name === workflowName
+    const found = workflows.find(
+      (w) => w.path === `.github/workflows/${wf}` || w.name === wf
     );
-    if (wf) {
-      workflowId = wf.id;
-    } else {
-      // Если не нашли по имени файла, пробуем как ID
-      workflowId = workflowName;
-    }
+    workflowId = found ? found.id : wf;
 
     await github.post(
       `/repos/${repo}/actions/workflows/${workflowId}/dispatches`,
@@ -319,50 +259,183 @@ bot.command('run', async (ctx) => {
     );
 
     await ctx.reply(
-      `✅ Workflow *${workflowName}* запущен!\n` +
+      `✅ Workflow *${wf}* запущен!\n` +
         `Отслеживайте статус: https://github.com/${repo}/actions`,
-      { parse_mode: 'Markdown' }
+      { parse_mode: 'Markdown', reply_markup: backKeyboard() }
     );
   } catch (err) {
-    await ctx.reply(`❌ Не удалось запустить workflow:\n${describeError(err)}`);
+    await ctx.reply(`❌ Не удалось запустить workflow:\n${describeError(err)}`, {
+      reply_markup: backKeyboard(),
+    });
   }
-});
+}
 
-// ──────────────────────────────────────────────────────────────
-//  Обработка остальных сообщений
-// ──────────────────────────────────────────────────────────────
-bot.on('message:text', async (ctx) => {
+async function handleHelp(ctx) {
   await ctx.reply(
-    'Я не понимаю это сообщение. Используйте /help для списка команд.'
+    '📋 *Команды бота:*\n\n' +
+      '/start — приветствие + меню\n' +
+      '/help — этот список команд\n' +
+      '/status — статус последних GitHub Actions runs\n' +
+      '/last — последние 5 запусков тестов\n' +
+      '/alerts — последние неудачные запуски\n' +
+      '/run — запуск workflow\n' +
+      '/report — ссылки на Allure-отчёты\n' +
+      '/repos — список отслеживаемых репозиториев\n\n' +
+      '💡 Или используйте кнопки меню ниже:',
+    {
+      parse_mode: 'Markdown',
+      reply_markup: mainMenuKeyboard(),
+    }
+  );
+}
+
+// ─── Команды ───
+
+bot.command('start', async (ctx) => {
+  await ctx.reply(
+    '🤖 *Telegram Alert Bot*\n\n' +
+      'Бот для мониторинга и управления GitHub Actions.\n' +
+      'Используйте кнопки ниже для управления:\n\n' +
+      '📊 — статус тестов\n' +
+      '🕐 — последние запуски\n' +
+      '🚨 — алерты и ошибки\n' +
+      '🚀 — запуск тестов\n' +
+      '📊 — ссылки на отчёты',
+    {
+      parse_mode: 'Markdown',
+      reply_markup: mainMenuKeyboard(),
+    }
   );
 });
 
-// Глобальный обработчик ошибок
-bot.catch((err) => {
-  console.error('Глобальная ошибка бота:', err.error);
+bot.command('help', handleHelp);
+bot.command('status', handleStatus);
+bot.command('last', handleLast);
+bot.command('alerts', handleAlerts);
+bot.command('report', handleReport);
+bot.command('repos', handleRepos);
+
+bot.command('run', async (ctx) => {
+  const args = ctx.message.text.split(/\s+/).slice(1);
+  await handleRun(ctx, args[0]);
 });
 
-// ──────────────────────────────────────────────────────────────
-//  Запуск — long polling
-// ──────────────────────────────────────────────────────────────
+// ─── Callback query handler (нажатия на inline-кнопки) ───
+
+bot.callbackQuery('btn_menu', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await ctx.reply('🏠 *Главное меню*', {
+    parse_mode: 'Markdown',
+    reply_markup: mainMenuKeyboard(),
+  });
+});
+
+bot.callbackQuery('btn_status', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await handleStatus(ctx);
+});
+
+bot.callbackQuery('btn_last', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await handleLast(ctx);
+});
+
+bot.callbackQuery('btn_alerts', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await handleAlerts(ctx);
+});
+
+bot.callbackQuery('btn_report', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await handleReport(ctx);
+});
+
+bot.callbackQuery('btn_repos', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await handleRepos(ctx);
+});
+
+bot.callbackQuery('btn_help', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await handleHelp(ctx);
+});
+
+bot.callbackQuery('btn_run', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await ctx.reply('🚀 *Выберите workflow для запуска:*', {
+    parse_mode: 'Markdown',
+    reply_markup: runKeyboard(),
+  });
+});
+
+bot.callbackQuery('btn_run_allure', async (ctx) => {
+  await ctx.answerCallbackQuery('Запускаю Allure Report...');
+  await handleRun(ctx, 'allure-report.yml');
+});
+
+bot.callbackQuery('btn_run_ts', async (ctx) => {
+  await ctx.answerCallbackQuery('Запускаю TypeScript Tests...');
+  await handleRun(ctx, 'typescript-ci-v2.yml');
+});
+
+// ─── Обработка остальных сообщений ───
+bot.on('message:text', async (ctx) => {
+  await ctx.reply(
+    'Я не понимаю это сообщение. Используйте /help или нажмите кнопку меню.',
+    { reply_markup: mainMenuKeyboard() }
+  );
+});
+
+bot.catch((err) => {
+  console.error('Bot error:', err.error);
+});
+
+// ─── Запуск ───
 async function main() {
-  console.log('🤖 Запуск Telegram Alert Bot (long polling)...');
-  console.log(`📂 Отслеживаемые репозитории: ${REPOS.join(', ')}`);
-  console.log(`🔧 Workflow по умолчанию: ${DEFAULT_WORKFLOW} (${DEFAULT_BRANCH})`);
+  console.log('🤖 Starting Telegram Alert Bot (long polling)...');
+  console.log(`📂 Repositories: ${REPOS.join(', ')}`);
+  console.log(`🔧 Default workflow: ${DEFAULT_WORKFLOW} (${DEFAULT_BRANCH})`);
   if (ALLOWED_USER_ID) {
-    console.log(`🔒 Доступ ограничен пользователем ID: ${ALLOWED_USER_ID}`);
+    console.log(`🔒 Access restricted to user ID: ${ALLOWED_USER_ID}`);
   }
 
-  // Удаляем webhook (на случай если был установлен ранее) и стартуем polling
   await bot.api.deleteWebhook({ drop_pending_updates: true });
+
+  // Menu button — commands list in Telegram client
+  await bot.api.setChatMenuButton({
+    menu_button: { type: 'commands' },
+  });
+
+  // Bot description
+  await bot.api.setMyDescription(
+    'Бот для мониторинга и управления GitHub Actions. Статус тестов, запуск workflow, Allure-отчёты.'
+  );
+
+  await bot.api.setMyShortDescription(
+    'QA Alert Bot — мониторинг GitHub Actions'
+  );
+
+  // Slash commands in Telegram client
+  await bot.api.setMyCommands([
+    { command: 'start', description: 'Приветствие + меню' },
+    { command: 'help', description: 'Список команд' },
+    { command: 'status', description: 'Статус GitHub Actions' },
+    { command: 'last', description: 'Последние 5 запусков' },
+    { command: 'alerts', description: 'Неудачные запуски' },
+    { command: 'run', description: 'Запустить workflow' },
+    { command: 'report', description: 'Ссылки на отчёты' },
+    { command: 'repos', description: 'Отслеживаемые репозитории' },
+  ]);
+
   await bot.start({
     onStart: (botInfo) => {
-      console.log(`✅ Бот @${botInfo.username} запущен и готов к работе!`);
+      console.log(`✅ Bot @${botInfo.username} started successfully!`);
+      console.log(`📱 Inline keyboard and menu button configured.`);
     },
   });
 }
 
 main().catch((err) => {
-  console.error('💥 Критическая ошибка при запуске:', err);
+  console.error('💥 Fatal error on startup:', err);
   process.exit(1);
 });
