@@ -1,168 +1,84 @@
-# 🤖 Telegram Alert Bot
+# telegram-allert-bot
 
-Telegram-бот для мониторинга и управления **GitHub Actions** — статусы запусков, алерты, запуск workflows, ссылки на Allure-отчёты. Работает в режиме **long polling** (не требует публичного URL).
+Telegram-бот для мониторинга и управления GitHub Actions. Работает в режиме long polling (grammY) — публичный URL не требуется.
 
 ## Возможности
 
-- 📊 **Реальный статус** GitHub Actions через GitHub API
-- 🚨 **Алерты** — последние неудачные/отменённые запуски
-- 🚀 **Запуск workflows** напрямую из Telegram
-- 🔗 **Ссылки на Allure-отчёты** (GitHub Pages)
-- 📂 **Несколько репозиториев** — отслеживание в одном боте
-- 🔒 **Ограничение доступа** по Telegram user ID
-- 🔄 **Long polling** — не нужен webhook и публичный URL
+- `/start` — приветствие
+- `/help` — список всех команд
+- `/status` — реальный статус последних GitHub Actions runs (API запрос)
+- `/last` — последние 5 запусков тестов с датами и статусами
+- `/alerts` — последние неудачные/отменённые запуски
+- `/run` — запуск workflow через GitHub API (по умолчанию `allure-report.yml`)
+- `/report` — ссылки на Allure-отчёты (GitHub Pages)
+- `/repos` — список отслеживаемых репозиториев
 
 ## Стек
 
-| Компонент | Технология |
-|---|---|
-| Telegram-библиотека | [grammY](https://grammy.dev/) (long polling) |
-| HTTP-клиент | axios |
-| Хостинг | [Render](https://render.com) (free tier) |
-| Runtime | Node.js ≥ 18 |
-
-## Команды бота
-
-| Команда | Описание |
-|---|---|
-| `/start` | Приветствие |
-| `/help` | Список всех команд |
-| `/status` | Реальный статус последних GitHub Actions runs (по всем репозиториям) |
-| `/last` | Последние 5 запусков тестов с датами и ссылками |
-| `/alerts` | Последние неудачные / отменённые запуски (алерты) |
-| `/run` | Запуск workflow через GitHub API. По умолчанию `allure-report.yml` на ветке `main`. Можно указать аргументы: `/run allure-ts.yml develop` |
-| `/report` | Ссылки на Allure-отчёты (GitHub Pages) |
-| `/repos` | Список отслеживаемых репозиториев |
+- **Node.js 18+** + **grammY** (Telegram Bot API framework, polling mode)
+- **axios** (HTTP-запросы к GitHub API)
+- **Railway** или **Render** (хостинг, free tier)
 
 ## Переменные окружения
 
-| Переменная | Обязательная | Описание |
+| Переменная | Описание | Обязательно |
 |---|---|---|
-| `TELEGRAM_BOT_TOKEN` | ✅ | Токен бота от [@BotFather](https://t.me/BotFather) |
-| `PAT_TOKEN` | ✅ | GitHub Personal Access Token со scopes: `repo`, `workflow` |
-| `TELEGRAM_USER_ID` | ⬜ | Telegram user ID для ограничения доступа (если не задан — доступ открыт всем) |
-| `GITHUB_REPOS` | ⬜ | Список репозиториев через запятую (`owner/repo`). По умолчанию: `ClarenceFerreiro/postman-api-tests` |
-| `DEFAULT_WORKFLOW` | ⬜ | Workflow для запуска командой `/run` (имя файла). По умолчанию: `allure-report.yml` |
-| `DEFAULT_BRANCH` | ⬜ | Ветка для запуска workflow. По умолчанию: `main` |
-| `REPORT_BASE_URL` | ⬜ | Базовый URL Allure-отчётов. По умолчанию: `https://clarenceferreiro.github.io/postman-api-tests/` |
+| `TELEGRAM_BOT_TOKEN` | Токен бота от [@BotFather](https://t.me/BotFather) | ✅ |
+| `PAT_TOKEN` | GitHub Personal Access Token (scopes: `repo`, `workflow`) | ✅ |
+| `TELEGRAM_USER_ID` | Telegram user ID для ограничения доступа | рекомендуется |
+| `GITHUB_REPOS` | Список репозиториев через запятую (`owner/repo`) | нет (по умолчанию `ClarenceFerreiro/postman-api-tests`) |
+| `DEFAULT_WORKFLOW` | Workflow для `/run` (имя файла) | нет (по умолчанию `allure-report.yml`) |
+| `DEFAULT_BRANCH` | Ветка для запуска | нет (по умолчанию `main`) |
+| `REPORT_BASE_URL` | Базовый URL Allure-отчётов | нет (по умолчанию GitHub Pages) |
 
-> ⚠️ **Важно:** `PAT_TOKEN` должен иметь scopes `repo` и `workflow` для запуска workflows и доступа к Actions API.
-
-## Локальный запуск
-
-### 1. Клонирование
+## Установка и локальный запуск
 
 ```bash
 git clone https://github.com/ClarenceFerreiro/telegram-allert-bot.git
 cd telegram-allert-bot
-```
-
-### 2. Установка зависимостей
-
-```bash
 npm install
-```
-
-### 3. Настройка переменных окружения
-
-```bash
 cp .env.example .env
-# Отредактируйте .env — впишите реальные значения
-```
-
-### 4. Запуск
-
-```bash
+# Отредактируйте .env — заполните TELEGRAM_BOT_TOKEN и PAT_TOKEN
 npm start
 ```
 
-Бот запустится в режиме long polling. Откройте Telegram и отправьте `/start` вашему боту.
+## Деплой на Railway (Free plan)
 
-> 💡 Для загрузки `.env` при локальном запуске можно использовать `dotenv` или передать переменные напрямую:
-> ```bash
-> export $(cat .env | xargs) && npm start
-> ```
+Railway предлагает free plan: $0/мес, 30-day trial с $5 credits, затем $1/мес.
+Без credit card для старта. 1 vCPU / 0.5 GB RAM — достаточно для бота.
 
-## Деплой на Render
-
-[Render](https://render.com) предоставляет free tier для web-сервисов.
-
-### Способ 1: через render.yaml (Blueprint)
-
-1. Зайдите на [dashboard.render.com](https://dashboard.render.com)
-2. Нажмите **New** → **Blueprint**
-3. Выберите репозиторий `ClarenceFerreiro/telegram-allert-bot`
-4. Render автоматически распознает `render.yaml` и создаст сервис
-5. Заполните секретные переменные в настройках сервиса:
+1. Зайди на [railway.app](https://railway.app) → Login with GitHub
+2. **New Project** → **Deploy from GitHub repo** → выбери `telegram-allert-bot`
+3. Railway подхватит `railway.json` автоматически
+4. Добавь переменные окружения (Settings → Variables):
    - `TELEGRAM_BOT_TOKEN` — токен бота
-   - `PAT_TOKEN` — GitHub PAT
-   - `TELEGRAM_USER_ID` — ваш Telegram ID
-6. Нажмите **Apply** — Render соберёт и запустит бота
+   - `PAT_TOKEN` — GitHub PAT (scopes: `repo`, `workflow`)
+   - `TELEGRAM_USER_ID` — `405995403`
+5. Deploy → бот запустится в polling режиме
 
-### Способ 2: вручную
+## Деплой на Render (Free tier)
 
-1. **New** → **Web Service**
-2. Выберите репозиторий `ClarenceFerreiro/telegram-allert-bot`
-3. Настройки:
-   - **Runtime:** Node
-   - **Build Command:** `npm install`
-   - **Start Command:** `node bot.js`
-   - **Plan:** Free
-4. Добавьте переменные окружения (см. таблицу выше)
-5. Нажмите **Create Web Service**
+1. Зайди на [render.com](https://render.com) → Sign up with GitHub
+2. **New+** → **Web Service** → выбери `telegram-allert-bot`
+3. Render подхватит `render.yaml` автоматически
+4. Добавь переменные окружения (Environment):
+   - `TELEGRAM_BOT_TOKEN` — токен бота
+   - `PAT_TOKEN` — GitHub PAT (scopes: `repo`, `workflow`)
+   - `TELEGRAM_USER_ID` — `405995403`
+5. Create Web Service → бот запустится автоматически
 
-### Проверка деплоя
+## Безопасность
 
-После успешного деплоя в логах Render должно появиться:
-
-```
-🤖 Запуск Telegram Alert Bot (long polling)...
-📂 Отслеживаемые репозитории: ClarenceFerreiro/postman-api-tests
-✅ Бот @your_bot_name запущен и готов к работе!
-```
-
-Откройте Telegram и отправьте боту `/help`.
-
-> ℹ️ На free tier Render сервис может «засыпать» после 15 минут неактивности. При следующем запросе он просыпается за несколько секунд. Для бота в polling-режиме это не проблема — grammY автоматически переподключается.
-
-## Получение токенов
-
-### Telegram Bot Token
-
-1. Откройте [@BotFather](https://t.me/BotFather) в Telegram
-2. Отправьте `/newbot`
-3. Задайте имя и username бота
-4. Получите токен вида `123456:ABC-DEF...`
-
-### GitHub Personal Access Token
-
-1. Откройте [github.com/settings/tokens](https://github.com/settings/tokens)
-2. **Generate new token (classic)**
-3. Выберите scopes: `repo` (полный) и `workflow`
-4. Скопируйте токен (виден только один раз)
-
-### Telegram User ID
-
-1. Откройте [@userinfobot](https://t.me/userinfobot) в Telegram
-2. Отправьте `/start`
-3. Бот вернёт ваш ID (например, `405995403`)
-
-## Структура проекта
-
-```
-telegram-allert-bot/
-├── bot.js           # Основной код бота (grammY, polling)
-├── package.json     # Зависимости и скрипты
-├── render.yaml      # Конфигурация деплоя на Render
-├── .env.example     # Пример переменных окружения
-├── .gitignore       # Исключения Git
-└── README.md        # Документация
-```
+- Бот использует **long polling** — не требует публичного URL
+- Доступ ограничен по `TELEGRAM_USER_ID` (только указанный пользователь может управлять ботом)
+- При старте бот автоматически удаляет старый webhook (`deleteWebhook`)
+- Токены передаются только через переменные окружения, не через код
 
 ## Связанные репозитории
 
-- [ClarenceFerreiro/postman-api-tests](https://github.com/ClarenceFerreiro/postman-api-tests) — тесты и Allure-отчёты, которые бот запускает и показывает
+- [ClarenceFerreiro/postman-api-tests](https://github.com/ClarenceFerreiro/postman-api-tests) — тесты и отчёты
+- [ClarenceFerreiro/netgrid-monitor](https://github.com/ClarenceFerreiro/netgrid-monitor) — мониторинг сайтов
 
-## Лицензия
+## Bot Token
 
-MIT
+Бот: `@testsQAalertt_bot` (QAalertbot, ID: 8591899224)
