@@ -16,7 +16,7 @@ const ALLOWED_USER_ID = process.env.TELEGRAM_USER_ID
   ? Number(process.env.TELEGRAM_USER_ID)
   : null;
 
-const REPOS = (process.env.GITHUB_REPOS || 'ClarenceFerreiro/postman-api-tests')
+const REPOS = (process.env.GITHUB_REPOS || process.env.REPOS || 'ClarenceFerreiro/postman-api-tests')
   .split(',')
   .map((r) => r.trim())
   .filter(Boolean);
