@@ -12,11 +12,14 @@ Telegram-бот для мониторинга и управления GitHub Act
 - `/run` — запуск workflow через GitHub API (по умолчанию `allure-report.yml`)
 - `/report` — ссылки на Allure-отчёты (GitHub Pages)
 - `/repos` — список отслеживаемых репозиториев
+- `/sites` — проверка доступности сайтов
+- `/vps` — меню управления VPS (ресурсы, Docker, логи, uptime, рестарт сервисов)
 
 ## Стек
 
 - **Node.js 18+** + **grammY** (Telegram Bot API framework, polling mode)
 - **axios** (HTTP-запросы к GitHub API)
+- **node-ssh** (SSH-подключение к VPS для команды `/vps`)
 - **Railway** или **Render** (хостинг, free tier)
 
 ## Переменные окружения
@@ -30,6 +33,10 @@ Telegram-бот для мониторинга и управления GitHub Act
 | `DEFAULT_WORKFLOW` | Workflow для `/run` (имя файла) | нет (по умолчанию `allure-report.yml`) |
 | `DEFAULT_BRANCH` | Ветка для запуска | нет (по умолчанию `main`) |
 | `REPORT_BASE_URL` | Базовый URL Allure-отчётов | нет (по умолчанию GitHub Pages) |
+| `SITES` | Сайты для мониторинга | нет |
+| `VPS_HOST` | IP или hostname VPS для `/vps` | нет (по умолчанию `188.255.163.132`) |
+| `VPS_USER` | SSH-пользователь VPS | нет (по умолчанию `root`) |
+| `VPS_SSH_KEY_BASE64` | Приватный SSH-ключ (ed25519) в base64 | нет (если не задан, `/vps` сообщит об этом) |
 
 ## Установка и локальный запуск
 

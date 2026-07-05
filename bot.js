@@ -7,6 +7,7 @@
 
 const { Bot, InlineKeyboard } = require('grammy');
 const axios = require('axios');
+const { NodeSSH } = require('node-ssh');
 
 // ─── Конфигурация ───
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -29,6 +30,11 @@ const SITES = (process.env.SITES || 'https://babycloud.by/,https://premiumfuji.b
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean);
+
+// VPS monitoring
+const VPS_HOST = process.env.VPS_HOST || '188.255.163.132';
+const VPS_USER = process.env.VPS_USER || 'root';
+const VPS_SSH_KEY_BASE64 = process.env.VPS_SSH_KEY_BASE64 || '';
 
 if (!TELEGRAM_BOT_TOKEN) { console.error('❌ TELEGRAM_BOT_TOKEN not set'); process.exit(1); }
 if (!GITHUB_TOKEN) { console.error('❌ PAT_TOKEN not set'); process.exit(1); }
@@ -69,7 +75,9 @@ function mainMenuKeyboard() {
     .text('📂 Репозитории', 'btn_repos')
     .row()
     .text('🌐 Сайты', 'btn_sites')
-    .text('❓ Помощь', 'btn_help');
+    .text('❓ Помощь', 'btn_help')
+    .row()
+    .text('🖥 VPS', 'btn_vps');
 }
 
 function backKeyboard() {
@@ -83,6 +91,29 @@ function runKeyboard() {
     .text('📝 TypeScript Tests', 'btn_run_ts')
     .row()
     .text('⬅️ В меню', 'btn_menu');
+}
+
+function vpsMenuKeyboard() {
+  return new InlineKeyboard()
+    .text('📊 Ресурсы', 'btn_vps_resources')
+    .text('🐳 Docker', 'btn_vps_docker')
+    .row()
+    .text('📜 Логи', 'btn_vps_logs')
+    .text('⏱ Uptime', 'btn_vps_uptime')
+    .row()
+    .text('🔄 Рестарт сервиса', 'btn_vps_restart_menu')
+    .row()
+    .text('⬅️ В меню', 'btn_menu');
+}
+
+function vpsRestartMenuKeyboard() {
+  return new InlineKeyboard()
+    .text('🌐 Nginx', 'btn_vps_restart_nginx')
+    .text('🐳 Docker', 'btn_vps_restart_docker')
+    .row()
+    .text('🔄 Syncthing', 'btn_vps_restart_syncthing')
+    .row()
+    .text('⬅️ Назад к VPS', 'btn_vps_menu');
 }
 
 // ─── Вспомогательные функции ───
@@ -288,7 +319,12 @@ async function handleHelp(ctx) {
       '/run — запуск workflow\n' +
       '/report — ссылки на Allure-отчёты\n' +
       '/repos — список отслеживаемых репозиториев\n' +
-      '/sites — проверка доступности сайтов\n\n' +
+      '/sites — проверка доступности сайтов\n' +
+      '/vps — меню управления VPS\n' +
+      '  /vps resources — ресурсы VPS\n' +
+      '  /vps docker — Docker контейнеры\n' +
+      '  /vps uptime — uptime VPS\n' +
+      '  /vps logs — последние логи\n\n' +
       '💡 Или используйте кнопки меню ниже:',
     {
       parse_mode: 'Markdown',
@@ -374,6 +410,253 @@ async function handleSites(ctx) {
   });
 }
 
+// ─── VPS helpers ───
+
+function parseKeyValue(output) {
+  const map = {};
+  for (const line of output.trim().split('\n')) {
+    const idx = line.indexOf('=');
+    if (idx > 0) {
+      map[line.slice(0, idx)] = line.slice(idx + 1);
+    }
+  }
+  return map;
+}
+
+function serviceIcon(status) {
+  return status === 'active' ? '✅' : '❌';
+}
+
+async function withSsh(fn) {
+  if (!VPS_SSH_KEY_BASE64) {
+    throw new Error(
+      'SSH-ключ для подключения к VPS не настроен. ' +
+        'Добавьте переменную окружения `VPS_SSH_KEY_BASE64`.'
+    );
+  }
+
+  const ssh = new NodeSSH();
+  try {
+    const privateKey = Buffer.from(VPS_SSH_KEY_BASE64, 'base64').toString('utf-8');
+    await ssh.connect({
+      host: VPS_HOST,
+      username: VPS_USER,
+      privateKey,
+      readyTimeout: 15000,
+    });
+    return await fn(ssh);
+  } finally {
+    ssh.dispose();
+  }
+}
+
+async function handleVpsMenu(ctx) {
+  await ctx.reply(
+    `🖥 *VPS ${VPS_HOST}*\n\nВыберите действие:`,
+    {
+      parse_mode: 'Markdown',
+      reply_markup: vpsMenuKeyboard(),
+    }
+  );
+}
+
+async function handleVpsHealth(ctx) {
+  await ctx.reply('🖥 *Запрашиваю состояние ресурсов...*', { parse_mode: 'Markdown' });
+
+  try {
+    const result = await withSsh((ssh) =>
+      ssh.execCommand(`
+        set -e
+        HOST=\$(hostname)
+        UPTIME=\$(uptime -p 2>/dev/null || uptime | sed 's/.*up /up /' | sed 's/,.*//')
+        LOAD=\$(cat /proc/loadavg | awk '{print \$1, \$2, \$3}')
+        RAM_USED=\$(free -m | awk '/Mem:/{print \$3}')
+        RAM_TOTAL=\$(free -m | awk '/Mem:/{print \$2}')
+        DISK_PCT=\$(df -h / | awk 'NR==2{print \$5}')
+        DISK_FREE=\$(df -h / | awk 'NR==2{print \$4}')
+        DOCKER_COUNT=\$(docker ps -q 2>/dev/null | wc -l)
+        NGINX=\$(systemctl is-active nginx 2>/dev/null || echo inactive)
+        DOCKER_SVC=\$(systemctl is-active docker 2>/dev/null || echo inactive)
+        SYNCTHING=\$(systemctl is-active syncthing 2>/dev/null || echo inactive)
+        echo "HOST=\$HOST"
+        echo "UPTIME=\$UPTIME"
+        echo "LOAD=\$LOAD"
+        echo "RAM_USED=\$RAM_USED"
+        echo "RAM_TOTAL=\$RAM_TOTAL"
+        echo "DISK_PCT=\$DISK_PCT"
+        echo "DISK_FREE=\$DISK_FREE"
+        echo "DOCKER_COUNT=\$DOCKER_COUNT"
+        echo "NGINX=\$NGINX"
+        echo "DOCKER_SVC=\$DOCKER_SVC"
+        echo "SYNCTHING=\$SYNCTHING"
+      `)
+    );
+
+    if (result.stderr) {
+      console.error('VPS health stderr:', result.stderr);
+    }
+
+    const m = parseKeyValue(result.stdout);
+    const ramPct = m.RAM_TOTAL > 0
+      ? Math.round((Number(m.RAM_USED) / Number(m.RAM_TOTAL)) * 100)
+      : '?';
+
+    const status = [];
+    const diskValue = parseInt((m.DISK_PCT || '').replace('%', ''), 10) || 0;
+    if (diskValue >= 90) status.push('⚠️ Диск заполнен более чем на 90%');
+    if (ramPct >= 80) status.push('⚠️ RAM используется более чем на 80%');
+    if (m.NGINX !== 'active' || m.DOCKER_SVC !== 'active' || m.SYNCTHING !== 'active') {
+      status.push('🚨 Один или несколько сервисов не активны');
+    }
+    if (status.length === 0) status.push('✅ Всё в порядке');
+
+    const lines = [
+      `🖥 *Состояние VPS (${VPS_HOST})*`,
+      `Host: ${m.HOST || '—'}`,
+      `Uptime: ${m.UPTIME || '—'}`,
+      '',
+      '*📊 Ресурсы*',
+      `• Load: ${m.LOAD || '—'}`,
+      `• RAM: ${m.RAM_USED || '—'} / ${m.RAM_TOTAL || '—'} MB (~${ramPct}%)`,
+      `• Disk: ${m.DISK_PCT || '—'} (${m.DISK_FREE || '—'} free)`,
+      '',
+      '*🔧 Сервисы*',
+      `${serviceIcon(m.NGINX)} nginx — ${m.NGINX || '—'}`,
+      `${serviceIcon(m.DOCKER_SVC)} docker — ${m.DOCKER_SVC || '—'}`,
+      `${serviceIcon(m.SYNCTHING)} syncthing — ${m.SYNCTHING || '—'}`,
+      '',
+      `*🐳 Docker контейнеров:* ${m.DOCKER_COUNT || '—'}`,
+      '',
+      `*Статус:* ${status.join(' / ')}`,
+    ];
+
+    await ctx.reply(lines.join('\n'), {
+      parse_mode: 'Markdown',
+      reply_markup: vpsMenuKeyboard(),
+    });
+  } catch (err) {
+    console.error('VPS health error:', err);
+    await ctx.reply(
+      `❌ Не удалось получить состояние VPS:\n${err.message || 'Unknown error'}`,
+      { reply_markup: vpsMenuKeyboard() }
+    );
+  }
+}
+
+async function handleVpsDocker(ctx) {
+  await ctx.reply('🐳 *Запрашиваю список контейнеров...*', { parse_mode: 'Markdown' });
+
+  try {
+    const result = await withSsh((ssh) =>
+      ssh.execCommand(
+        "docker ps --format '{{.Names}} | {{.Image}} | {{.Status}}' 2>/dev/null || echo 'No containers running'"
+      )
+    );
+
+    const containers = result.stdout.trim() || 'Нет запущенных контейнеров';
+    const text = [
+      `🐳 *Docker контейнеры (${VPS_HOST})*`,
+      '',
+      '\`\`\`',
+      containers,
+      '\`\`\`',
+    ].join('\n');
+
+    await ctx.reply(text, {
+      parse_mode: 'Markdown',
+      reply_markup: vpsMenuKeyboard(),
+    });
+  } catch (err) {
+    console.error('VPS docker error:', err);
+    await ctx.reply(
+      `❌ Не удалось получить список контейнеров:\n${err.message || 'Unknown error'}`,
+      { reply_markup: vpsMenuKeyboard() }
+    );
+  }
+}
+
+async function handleVpsUptime(ctx) {
+  try {
+    const result = await withSsh((ssh) =>
+      ssh.execCommand("uptime -p 2>/dev/null || uptime | sed 's/.*up /up /' | sed 's/,.*//'")
+    );
+    const uptime = result.stdout.trim() || '—';
+    await ctx.reply(
+      `⏱ *Uptime ${VPS_HOST}*\n\n${uptime}`,
+      { parse_mode: 'Markdown', reply_markup: vpsMenuKeyboard() }
+    );
+  } catch (err) {
+    console.error('VPS uptime error:', err);
+    await ctx.reply(
+      `❌ Не удалось получить uptime:\n${err.message || 'Unknown error'}`,
+      { reply_markup: vpsMenuKeyboard() }
+    );
+  }
+}
+
+async function handleVpsLogs(ctx) {
+  await ctx.reply('📜 *Запрашиваю последние логи...*', { parse_mode: 'Markdown' });
+
+  try {
+    const result = await withSsh((ssh) =>
+      ssh.execCommand(
+        'echo "=== nginx ===" && journalctl -u nginx --no-pager -n 20 2>/dev/null && ' +
+          'echo "" && echo "=== docker ===" && journalctl -u docker --no-pager -n 20 2>/dev/null'
+      )
+    );
+
+    const logs = result.stdout.trim() || 'Логи не найдены';
+    const trimmed = logs.length > 3800 ? logs.slice(0, 3800) + '\n\n... (обрезано)' : logs;
+
+    await ctx.reply(
+      `📜 *Логи (${VPS_HOST})*\n\n\`\`\`\n${trimmed}\n\`\`\``,
+      { parse_mode: 'Markdown', reply_markup: vpsMenuKeyboard() }
+    );
+  } catch (err) {
+    console.error('VPS logs error:', err);
+    await ctx.reply(
+      `❌ Не удалось получить логи:\n${err.message || 'Unknown error'}`,
+      { reply_markup: vpsMenuKeyboard() }
+    );
+  }
+}
+
+async function handleVpsRestart(ctx, service) {
+  const serviceNames = {
+    nginx: 'nginx',
+    docker: 'docker',
+    syncthing: 'syncthing',
+  };
+  const name = serviceNames[service] || service;
+
+  await ctx.reply(
+    `🔄 *Рестарт ${name} на ${VPS_HOST}...*`,
+    { parse_mode: 'Markdown' }
+  );
+
+  try {
+    const result = await withSsh((ssh) =>
+      ssh.execCommand(`systemctl restart ${name} && systemctl is-active ${name}`)
+    );
+
+    const status = result.stdout.trim();
+    const ok = status === 'active';
+
+    await ctx.reply(
+      `${ok ? '✅' : '⚠️'} *Рестарт ${name}*\n\n` +
+        `${ok ? 'Сервис успешно перезапущен.' : 'Рестарт выполнен, но статус сервиса неактивен.'}\n` +
+        `Текущий статус: ${status || '—'}`,
+      { parse_mode: 'Markdown', reply_markup: vpsMenuKeyboard() }
+    );
+  } catch (err) {
+    console.error('VPS restart error:', err);
+    await ctx.reply(
+      `❌ Не удалось перезапустить ${name}:\n${err.message || 'Unknown error'}`,
+      { reply_markup: vpsRestartMenuKeyboard() }
+    );
+  }
+}
+
 // ─── Команды ───
 
 bot.command('start', async (ctx) => {
@@ -400,6 +683,16 @@ bot.command('alerts', handleAlerts);
 bot.command('report', handleReport);
 bot.command('repos', handleRepos);
 bot.command('sites', handleSites);
+
+bot.command('vps', async (ctx) => {
+  const args = ctx.message.text.split(/\s+/).slice(1);
+  const sub = args[0]?.toLowerCase();
+  if (sub === 'resources' || sub === 'ресурсы') return handleVpsHealth(ctx);
+  if (sub === 'docker') return handleVpsDocker(ctx);
+  if (sub === 'uptime') return handleVpsUptime(ctx);
+  if (sub === 'logs') return handleVpsLogs(ctx);
+  return handleVpsMenu(ctx);
+});
 
 bot.command('run', async (ctx) => {
   const args = ctx.message.text.split(/\s+/).slice(1);
@@ -444,6 +737,59 @@ bot.callbackQuery('btn_repos', async (ctx) => {
 bot.callbackQuery('btn_sites', async (ctx) => {
   await ctx.answerCallbackQuery();
   await handleSites(ctx);
+});
+
+bot.callbackQuery('btn_vps', async (ctx) => {
+  await ctx.answerCallbackQuery('Открываю меню VPS...');
+  await handleVpsMenu(ctx);
+});
+
+bot.callbackQuery('btn_vps_menu', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await handleVpsMenu(ctx);
+});
+
+bot.callbackQuery('btn_vps_resources', async (ctx) => {
+  await ctx.answerCallbackQuery('Запрашиваю ресурсы...');
+  await handleVpsHealth(ctx);
+});
+
+bot.callbackQuery('btn_vps_docker', async (ctx) => {
+  await ctx.answerCallbackQuery('Запрашиваю Docker...');
+  await handleVpsDocker(ctx);
+});
+
+bot.callbackQuery('btn_vps_logs', async (ctx) => {
+  await ctx.answerCallbackQuery('Запрашиваю логи...');
+  await handleVpsLogs(ctx);
+});
+
+bot.callbackQuery('btn_vps_uptime', async (ctx) => {
+  await ctx.answerCallbackQuery('Запрашиваю uptime...');
+  await handleVpsUptime(ctx);
+});
+
+bot.callbackQuery('btn_vps_restart_menu', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await ctx.reply('🔄 *Выберите сервис для рестарта:*', {
+    parse_mode: 'Markdown',
+    reply_markup: vpsRestartMenuKeyboard(),
+  });
+});
+
+bot.callbackQuery('btn_vps_restart_nginx', async (ctx) => {
+  await ctx.answerCallbackQuery('Рестарт nginx...');
+  await handleVpsRestart(ctx, 'nginx');
+});
+
+bot.callbackQuery('btn_vps_restart_docker', async (ctx) => {
+  await ctx.answerCallbackQuery('Рестарт docker...');
+  await handleVpsRestart(ctx, 'docker');
+});
+
+bot.callbackQuery('btn_vps_restart_syncthing', async (ctx) => {
+  await ctx.answerCallbackQuery('Рестарт syncthing...');
+  await handleVpsRestart(ctx, 'syncthing');
 });
 
 bot.callbackQuery('btn_help', async (ctx) => {
