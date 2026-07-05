@@ -427,27 +427,52 @@ function serviceIcon(status) {
   return status === 'active' ? '✅' : '❌';
 }
 
-async function withSsh(fn) {
-  if (!VPS_SSH_KEY_BASE64) {
-    throw new Error(
-      'SSH-ключ для подключения к VPS не настроен. ' +
-        'Добавьте переменную окружения `VPS_SSH_KEY_BASE64`.'
-    );
+async function withVpsShell(fn) {
+  // If an SSH key is provided, connect to the remote VPS.
+  // Otherwise run commands locally — useful when the bot is deployed on the VPS itself.
+  if (VPS_SSH_KEY_BASE64) {
+    const ssh = new NodeSSH();
+    try {
+      const privateKey = Buffer.from(VPS_SSH_KEY_BASE64, 'base64').toString('utf-8');
+      await ssh.connect({
+        host: VPS_HOST,
+        username: VPS_USER,
+        privateKey,
+        readyTimeout: 15000,
+      });
+      return await fn(ssh);
+    } finally {
+      ssh.dispose();
+    }
   }
 
-  const ssh = new NodeSSH();
-  try {
-    const privateKey = Buffer.from(VPS_SSH_KEY_BASE64, 'base64').toString('utf-8');
-    await ssh.connect({
-      host: VPS_HOST,
-      username: VPS_USER,
-      privateKey,
-      readyTimeout: 15000,
-    });
-    return await fn(ssh);
-  } finally {
-    ssh.dispose();
-  }
+  // Local fallback: emulate the ssh.execCommand interface.
+  const { exec } = require('child_process');
+  const { promisify } = require('util');
+  const execAsync = promisify(exec);
+
+  const localShell = {
+    execCommand: async (command) => {
+      try {
+        const { stdout, stderr } = await execAsync(command, { timeout: 30000 });
+        return { stdout: stdout || '', stderr: stderr || '', code: 0 };
+      } catch (err) {
+        return {
+          stdout: err.stdout || '',
+          stderr: err.stderr || '',
+          code: err.code || 1,
+        };
+      }
+    },
+  };
+
+  return await fn(localShell);
+}
+
+// Convenience: collect a single command output, respecting remote vs local.
+async function vpsExec(command) {
+  const result = await withVpsShell((shell) => shell.execCommand(command));
+  return result;
 }
 
 async function handleVpsMenu(ctx) {
@@ -464,33 +489,31 @@ async function handleVpsHealth(ctx) {
   await ctx.reply('🖥 *Запрашиваю состояние ресурсов...*', { parse_mode: 'Markdown' });
 
   try {
-    const result = await withSsh((ssh) =>
-      ssh.execCommand(`
-        set -e
-        HOST=\$(hostname)
-        UPTIME=\$(uptime -p 2>/dev/null || uptime | sed 's/.*up /up /' | sed 's/,.*//')
-        LOAD=\$(cat /proc/loadavg | awk '{print \$1, \$2, \$3}')
-        RAM_USED=\$(free -m | awk '/Mem:/{print \$3}')
-        RAM_TOTAL=\$(free -m | awk '/Mem:/{print \$2}')
-        DISK_PCT=\$(df -h / | awk 'NR==2{print \$5}')
-        DISK_FREE=\$(df -h / | awk 'NR==2{print \$4}')
-        DOCKER_COUNT=\$(docker ps -q 2>/dev/null | wc -l)
-        NGINX=\$(systemctl is-active nginx 2>/dev/null || echo inactive)
-        DOCKER_SVC=\$(systemctl is-active docker 2>/dev/null || echo inactive)
-        SYNCTHING=\$(systemctl is-active syncthing 2>/dev/null || echo inactive)
-        echo "HOST=\$HOST"
-        echo "UPTIME=\$UPTIME"
-        echo "LOAD=\$LOAD"
-        echo "RAM_USED=\$RAM_USED"
-        echo "RAM_TOTAL=\$RAM_TOTAL"
-        echo "DISK_PCT=\$DISK_PCT"
-        echo "DISK_FREE=\$DISK_FREE"
-        echo "DOCKER_COUNT=\$DOCKER_COUNT"
-        echo "NGINX=\$NGINX"
-        echo "DOCKER_SVC=\$DOCKER_SVC"
-        echo "SYNCTHING=\$SYNCTHING"
-      `)
-    );
+    const result = await vpsExec(`
+      set -e
+      HOST=\$(hostname)
+      UPTIME=\$(uptime -p 2>/dev/null || uptime | sed 's/.*up /up /' | sed 's/,.*//')
+      LOAD=\$(cat /proc/loadavg | awk '{print \$1, \$2, \$3}')
+      RAM_USED=\$(free -m | awk '/Mem:/{print \$3}')
+      RAM_TOTAL=\$(free -m | awk '/Mem:/{print \$2}')
+      DISK_PCT=\$(df -h / | awk 'NR==2{print \$5}')
+      DISK_FREE=\$(df -h / | awk 'NR==2{print \$4}')
+      DOCKER_COUNT=\$(docker ps -q 2>/dev/null | wc -l)
+      NGINX=\$(systemctl is-active nginx 2>/dev/null || echo inactive)
+      DOCKER_SVC=\$(systemctl is-active docker 2>/dev/null || echo inactive)
+      SYNCTHING=\$(systemctl is-active syncthing 2>/dev/null || echo inactive)
+      echo "HOST=\$HOST"
+      echo "UPTIME=\$UPTIME"
+      echo "LOAD=\$LOAD"
+      echo "RAM_USED=\$RAM_USED"
+      echo "RAM_TOTAL=\$RAM_TOTAL"
+      echo "DISK_PCT=\$DISK_PCT"
+      echo "DISK_FREE=\$DISK_FREE"
+      echo "DOCKER_COUNT=\$DOCKER_COUNT"
+      echo "NGINX=\$NGINX"
+      echo "DOCKER_SVC=\$DOCKER_SVC"
+      echo "SYNCTHING=\$SYNCTHING"
+    `);
 
     if (result.stderr) {
       console.error('VPS health stderr:', result.stderr);
@@ -547,10 +570,8 @@ async function handleVpsDocker(ctx) {
   await ctx.reply('🐳 *Запрашиваю список контейнеров...*', { parse_mode: 'Markdown' });
 
   try {
-    const result = await withSsh((ssh) =>
-      ssh.execCommand(
-        "docker ps --format '{{.Names}} | {{.Image}} | {{.Status}}' 2>/dev/null || echo 'No containers running'"
-      )
+    const result = await vpsExec(
+      "docker ps --format '{{.Names}} | {{.Image}} | {{.Status}}' 2>/dev/null || echo 'No containers running'"
     );
 
     const containers = result.stdout.trim() || 'Нет запущенных контейнеров';
@@ -577,9 +598,7 @@ async function handleVpsDocker(ctx) {
 
 async function handleVpsUptime(ctx) {
   try {
-    const result = await withSsh((ssh) =>
-      ssh.execCommand("uptime -p 2>/dev/null || uptime | sed 's/.*up /up /' | sed 's/,.*//'")
-    );
+    const result = await vpsExec("uptime -p 2>/dev/null || uptime | sed 's/.*up /up /' | sed 's/,.*//'");
     const uptime = result.stdout.trim() || '—';
     await ctx.reply(
       `⏱ *Uptime ${VPS_HOST}*\n\n${uptime}`,
@@ -598,11 +617,9 @@ async function handleVpsLogs(ctx) {
   await ctx.reply('📜 *Запрашиваю последние логи...*', { parse_mode: 'Markdown' });
 
   try {
-    const result = await withSsh((ssh) =>
-      ssh.execCommand(
-        'echo "=== nginx ===" && journalctl -u nginx --no-pager -n 20 2>/dev/null && ' +
-          'echo "" && echo "=== docker ===" && journalctl -u docker --no-pager -n 20 2>/dev/null'
-      )
+    const result = await vpsExec(
+      'echo "=== nginx ===" && journalctl -u nginx --no-pager -n 20 2>/dev/null && ' +
+        'echo "" && echo "=== docker ===" && journalctl -u docker --no-pager -n 20 2>/dev/null'
     );
 
     const logs = result.stdout.trim() || 'Логи не найдены';
@@ -635,9 +652,7 @@ async function handleVpsRestart(ctx, service) {
   );
 
   try {
-    const result = await withSsh((ssh) =>
-      ssh.execCommand(`systemctl restart ${name} && systemctl is-active ${name}`)
-    );
+    const result = await vpsExec(`systemctl restart ${name} && systemctl is-active ${name}`);
 
     const status = result.stdout.trim();
     const ok = status === 'active';
